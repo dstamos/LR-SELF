@@ -1,267 +1,112 @@
 import scipy.io as sio
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.sparse import csr_matrix, lil_matrix
 import igraph
 import time
 import pandas as pd
-import pickle
-import os
-import logging
-from joblib import Parallel, delayed
+from src.side_info_accessories import extract_side_info
 
 
-def data_gen(data_settings, embedding='None'):
+class Struct:
+    def __init__(self, **entries):
+        self.__dict__.update(entries)
 
-    train_perc = 0.5
-    val_perc = 0.2
 
-    # temp = sio.loadmat('datasets/ml100k.mat')
-    if data_settings['dataset_idx'] == 1:
-        temp = sio.loadmat('datasets/ml100kSparse.mat')
+class DataHandler:
+    def __init__(self, settings):
+        self.n_rows = None
+        self.n_cols = None
+        self.tr_matrix = None
+        self.tr_matrix_mask = None
+        self.val_matrix = None
+        self.test_matrix = None
+        self.test_matrix = None
+        self.tr_embedded = None
+        self.tr_embedded_mask = None
+        self.n_rows_embedded = None
+        self.n_cols_embedded = None
+        self.n_side_info = None
+        self.side_info = None
+
+        temp = sio.loadmat('datasets/' + settings.dataset + '.mat')
         full_matrix = temp['fullMatrix'].astype(float)
-    elif data_settings['dataset_idx'] == 2:
-        temp = sio.loadmat('datasets/ml1mSparse.mat')
-        full_matrix = temp['fullMatrix'].astype(float)
-    elif data_settings['dataset_idx'] == 3:
-        temp = sio.loadmat('datasets/jester1Sparse.mat')
-        full_matrix = temp['jester1Sparse'].astype(float)
-    elif data_settings['dataset_idx'] == 4:
-        temp = sio.loadmat('datasets/jester2Sparse.mat')
-        full_matrix = temp['jester2Sparse'].astype(float)
-    elif data_settings['dataset_idx'] == 5:
-        temp = sio.loadmat('datasets/jester3Sparse.mat')
-        full_matrix = temp['jester3Sparse'].astype(float)
-    elif data_settings['dataset_idx'] == 6:
-        temp = sio.loadmat('datasets/sushi.mat')
-        full_matrix = temp['M'].astype(float)
-        train_perc = 0.35
-        val_perc = 0.35
-    elif data_settings['dataset_idx'] == 7:
-        # from skmultilearn.dataset import load_from_arff
-        # import arff
-        # arff.DENSE
-        # path_to_arff_file = 'datasets/multilabel/' + data_settings['dataset'] + '/bibtex.arff'
-        # label_count = 159
-        # label_location = "end"
-        # arff_file_is_sparse = False
-        # X, y = load_from_arff(
-        #     path_to_arff_file,
-        #     label_count=label_count,
-        #     label_location=label_location,
-        #     load_sparse=arff_file_is_sparse
-        # )
 
-        file_path =  "datasets/multilabel/" + data_settings['dataset'] + "/bibtex.pckl"
+        n_rows, n_cols = full_matrix.shape
+        self.n_rows = n_rows
+        self.n_cols = n_cols
 
-        # pickle.dump([X, y], open(file_path, "wb"))
+        tr_matrix = lil_matrix((n_rows, n_cols))
+        val_matrix = lil_matrix((n_rows, n_cols))
+        test_matrix = lil_matrix((n_rows, n_cols))
+        train_idxs = [0] * n_rows
+        val_idxs = [0] * n_rows
+        test_idxs = [0] * n_rows
 
-        X, y = pickle.load(open(file_path, "rb"))
+        t = time.time()
+        for c_row in range(n_rows):
+            all_ratings = np.nonzero(full_matrix[c_row,:])[1]
+            all_ratings_shuffled = np.random.permutation(all_ratings)
+            n_all_ratings = len(all_ratings_shuffled)
 
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 8:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
+            n_train = int(np.floor(settings.train_perc * n_all_ratings))
+            n_val = int(np.ceil(settings.val_perc * n_all_ratings))
 
-        # from sklearn.preprocessing import normalize
-        #
-        # X = normalize(X, norm='l2', axis=1, copy=True, return_norm=False)
-        
-        from sklearn.preprocessing import scale
+            train_idx = all_ratings_shuffled[:n_train]
+            val_idx = all_ratings_shuffled[n_train+1:n_train+n_val]
+            test_idx = all_ratings_shuffled[n_train + n_val + 1:]
 
-        X = lil_matrix(scale(X.toarray(), axis=0))
+            train_idxs[c_row] = train_idx
+            val_idxs[c_row] = val_idx
+            test_idxs[c_row] = test_idx
 
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 9:
-        from skmultilearn.dataset import load_from_arff
-        import arff
-        dname = data_settings['dataset']
-        path_to_arff_file = 'datasets/multilabel/' + dname + '/' + dname + '.arff'
-        label_count = 174
-        label_location = "end"
-        arff_file_is_sparse = False
-        X, y = load_from_arff(
-            path_to_arff_file,
-            label_count=label_count,
-            label_location=label_location,
-            load_sparse=arff_file_is_sparse
-        )
+            tr_matrix[c_row, train_idx] = full_matrix[c_row, train_idx]
+            val_matrix[c_row, val_idx] = full_matrix[c_row, val_idx]
+            test_matrix[c_row, test_idx] = full_matrix[c_row, test_idx]
 
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
+            if c_row % 500 == 0:
+                print('sampling row: %5d | time: %f' % (c_row, time.time() - t))
 
-        pickle.dump([X, y], open(file_path, "wb"))
+        side_info = np.zeros((n_rows, n_cols + 1))
+        side_info[:, :-1] = tr_matrix.toarray()
+        side_info = side_info / np.tile(np.sqrt(1 + np.sum(tr_matrix.toarray()**2, 1)).reshape(n_rows, 1), (1, n_cols+1))
+        n_side_info = side_info.shape[1]
 
-        # X, y = pickle.load(open(file_path, "rb"))
-    elif data_settings['dataset_idx'] == 10:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
+        tr_embedded, tr_embedded_mask = pairwise_embedding(tr_matrix, n_rows, n_cols)
+        tr_embedded = tr_embedded
+        tr_embedded_mask = tr_embedded_mask
+        n_rows_embedded = n_rows
+        n_cols_embedded = tr_embedded.shape[1]
 
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 11:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
+        tr_matrix_mask = tr_matrix != 0
+        tr_matrix_mask.astype(np.int)
+        val_matrix = val_matrix
+        test_matrix = test_matrix
 
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 12:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
-
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 13:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
-
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 14:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
-
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 15:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
-
-        train_perc = 0.6
-        val_perc = 0.2
-    elif data_settings['dataset_idx'] == 12:
-        dname = data_settings['dataset']
-        file_path = "datasets/multilabel/" + dname + '/' + dname + '.pckl'
-        X, y = pickle.load(open(file_path, "rb"))
-
-        train_perc = 0.6
-        val_perc = 0.2
+        self.n_rows = n_rows
+        self.n_cols = n_cols
+        self.tr_matrix = tr_matrix
+        self.tr_matrix_mask = tr_matrix_mask
+        self.val_matrix = val_matrix
+        self.test_matrix = test_matrix
+        self.test_matrix = test_matrix
+        self.tr_embedded = tr_embedded
+        self.tr_embedded_mask = tr_embedded_mask
+        self.n_rows_embedded = n_rows_embedded
+        self.n_cols_embedded = n_cols_embedded
+        self.n_side_info = n_side_info
+        self.side_info = side_info
 
 
+def pairwise_embedding(y, n_rows, n_cols):
 
-    n_rows, n_cols = y.shape
-
-    shuffled_rows = np.random.permutation(n_rows)
-    tr_idxs = shuffled_rows[:int(round(n_rows*train_perc))]
-    val_idxs = shuffled_rows[len(tr_idxs):len(tr_idxs)+int(round(n_rows*val_perc))]
-    test_idxs = shuffled_rows[len(tr_idxs)+len(val_idxs):]
-
-    tr_matrix = y[tr_idxs, :]
-    val_matrix = y[val_idxs, :]
-    test_matrix = y[test_idxs, :]
-
-    X = lil_matrix(np.append(X.toarray(), np.ones(X.shape[0]).reshape(X.shape[0], 1), axis=1))
-
-    side_info_tr = X[tr_idxs, :]
-    side_info_val = X[val_idxs, :]
-    side_info_test = X[test_idxs, :]
-
-    n_rows, n_cols = tr_matrix.shape
-    data_settings['n_rows'] = n_rows
-    data_settings['n_cols'] = n_cols
-    #############
-    #############
-
-    data = {}
-
-    data['side_info'] = side_info_tr.toarray()
-    data['side_info_val'] = side_info_val.toarray()
-    data['side_info_test'] = side_info_test.toarray()
-    data_settings['n_sideinfo'] = side_info_tr.shape[1]
-
-    data['mask'] = np.ones(tr_matrix.shape)
-    data['tr_matrix'] = tr_matrix
-    data['val_matrix'] = val_matrix
-    data['test_matrix'] = test_matrix
-
-    # Y_tr_embedded, mask_tr_embedded = pairwise_embedding(tr_matrix, data_settings)
-    Y_tr_embedded, mask_embedded = fscore_embedding(tr_matrix)
-    data['Y_tr_embedded'] = Y_tr_embedded
-    # data['mask_tr_embedded'] = mask_embedded
-    data['mask_tr_embedded'] = np.ones(mask_embedded.shape)
-
-    data_settings['n_rows_embedded'] = n_rows
-    data_settings['n_cols_embedded'] = data['Y_tr_embedded'].shape[1]
-
-    data['data_settings'] = data_settings
-
-    return data, data_settings
-
-
-def fscore_embedding(Y):
-    n_rows, n_cols = Y.shape
-
-    t = time.time()
-
-    Y_embedded = lil_matrix((n_rows, int(n_cols * n_cols + 1)))
-    mask_embedded = lil_matrix((n_rows, int(n_cols * n_cols + 1)))
-    for c_row in range(n_rows):
-
-        # t = time.time()
-        # row_sum = np.sum(Y[c_row, :])
-        # # slow method
-        # A = np.zeros((n_cols, n_cols))
-        # for j in range(n_cols):
-        #     non_zero_check = Y[c_row, j] != 0
-        #     for k in range(n_cols):
-        #         for l in range(n_cols):
-        #             if non_zero_check and row_sum == l:
-        #                 Pjl = 1
-        #                 A[j, k] = A[j, k] + Pjl / (l + (k + 1))
-        #             else:
-        #                 pass
-        # Y_embedded[c_row, :-1] = np.ndarray.flatten(A)
-        # print(time.time() - t)
-
-        #TODO Double check flatten row-wise stuff
-        ###################
-
-        A = np.zeros((n_cols,n_cols))
-        support_indices = np.nonzero(Y[c_row,:])[1]
-        support_size = len(support_indices)
-
-        if support_size > 0:
-            A[:,support_indices] = 1 / (support_size + np.array(range(n_cols)).reshape(n_cols, 1) + 1)
-        else:
-            Y_embedded[c_row, -1] = 1
-
-        Y_embedded[c_row,:-1] = A.flatten()
-
-        if c_row % 1000 == 0:
-            print('embedding row: %5d | time: %f' % (c_row, time.time() - t))
-            logging.info('embedding row: %5d | time: %f', c_row, time.time() - t)
-
-        # separate case for y = 0
-        if np.sum(np.abs(Y[c_row,:])) == 0:
-            Y_embedded[c_row, -1] = 1
-
-    mask_embedded[np.nonzero(Y_embedded)] = 1
-
-    return Y_embedded, mask_embedded
-
-
-def pairwise_embedding(Y, data_settings):
-    n_rows = data_settings['n_rows']
-    n_cols = data_settings['n_cols']
-
-    mask_embedded = lil_matrix((n_rows, int(n_cols * (n_cols - 1) / 2)))
-    Y_embedded = lil_matrix((n_rows, int(n_cols * (n_cols - 1) / 2)))
+    mask_embedded = lil_matrix((n_rows, int((n_cols * (n_cols - 1) / 2))))
+    y_embedded = lil_matrix((n_rows, int((n_cols * (n_cols - 1) / 2))))
 
     t = time.time()
 
     for c_row in range(n_rows):
 
-        temp_matrix = Y[c_row, :].toarray() - Y[c_row, :].toarray().T
-        # outer product of the support
-        # temp_mask = abs(np.sign(Y[c_row, :].toarray()) * np.sign(Y[c_row, :].toarray().T))
+        temp_matrix = y[c_row, :].toarray() - y[c_row, :].toarray().T
         temp_mask = np.zeros(temp_matrix.shape)
         temp_mask[np.where(temp_matrix)] = 1
         temp_matrix = temp_mask * temp_matrix
@@ -271,25 +116,13 @@ def pairwise_embedding(Y, data_settings):
         temp_mask_vect = temp_mask[iu]
         temp_matrix_vect = temp_matrix[iu]
 
-        ###############
-        a = np.where(temp_matrix_vect)[0]
-        b = np.where(temp_mask_vect)[0]
-        if len(a) != len(b):
-            print('fucked embedding: ' + str(c_row))
-            k = 1
+        y_embedded[c_row, temp_mask_vect > 0] = temp_matrix_vect[temp_mask_vect > 0]
+        mask_embedded[c_row, temp_mask_vect > 0] = temp_mask_vect[temp_mask_vect > 0]
 
-        Y_embedded[c_row, temp_mask_vect>0 ] = temp_matrix_vect[temp_mask_vect>0]
-        mask_embedded[c_row, temp_mask_vect>0] = temp_mask_vect[temp_mask_vect>0]
-
-        # Y_embedded[:, temp_mask_vect>0 ] = temp_matrix_vect[temp_mask_vect>0]
-        # mask_embedded[:, temp_mask_vect>0] = temp_mask_vect[temp_mask_vect>0]
-
-        # break
         if c_row % 100 == 0:
             print('embedding row: %5d | time: %f' % (c_row, time.time() - t))
-            logging.info('embedding row: %5d | time: %f', c_row, time.time() - t)
 
-    return Y_embedded, mask_embedded
+    return y_embedded, mask_embedded
 
 
 def get_side_info(data, data_settings):
@@ -569,70 +402,6 @@ def pairwise_loss_separate(Y_embedded, mask_embedded, data_settings, W):
     return perf
 
 
-def fscore_from_embeddings(Y_true, side_info, data_settings, W):
-
-    n_rows = Y_true.shape[0]
-    # if data_settings['embedding'] != 'SELF':
-    Y_embedded_pred = side_info @ W
-    # else:
-    #     Y_embedded_pred = W
-
-    score = 0
-
-    t = time.time()
-    for c_row in range(n_rows):
-
-        Y_pred_vec = decoding_fscore_embeddings(Y_embedded_pred[c_row, :], data_settings)
-        Y_true_vec = Y_true[c_row, :].toarray().ravel()
-
-        # tp = len(np.nonzero(Y_pred_vec * Y_true_vec)[0])
-        # tp_fp = len(np.nonzero(Y_pred_vec)[0])
-        # tp_fn = len(np.nonzero(Y_true_vec)[0])
-        # new_fscore = 2 * tp / (tp_fp + tp_fn)
-
-        from sklearn.metrics import f1_score
-        new_fscore = f1_score(Y_true_vec, Y_pred_vec)
-
-        score = score + new_fscore
-
-        if c_row % 1000 == 0:
-            print('row: %4d | time lapsed: %7.2f' % (c_row, time.time() - t))
-            logging.info('row: %4d | time lapsed: %7.2f', c_row, time.time() - t)
-
-    score = score / n_rows
-
-    return score
-
-
-def decoding_fscore_embeddings(row, data_settings):
-
-    n_cols = data_settings['n_cols']
-
-    A = np.reshape(row[:-1], [n_cols, n_cols])
-
-    running_max = row[-1]
-    running_fstar = []
-    for k in range(n_cols):
-
-        # sorted_col = np.sort(A[:, k])[::-1]
-        # sorted_col_idx = np.argsort(A[:, k])[::-1]
-
-        sorted_row = np.sort(A[k, :])[::-1]
-        sorted_row_idx = np.argsort(A[k, :])[::-1]
-
-        temp = np.sum(sorted_row[:k+1])
-
-        if running_max < temp:
-            running_max = temp
-            running_fstar = sorted_row_idx[:k+1]
-
-    y = np.zeros(n_cols)
-    if len(running_fstar) > 0:
-        y[running_fstar] = 1
-
-    return y
-
-
 def perf_check(W, data):
 
     train_idxs = data['train_idxs']
@@ -701,17 +470,3 @@ def straight_pairwise_loss(data, data_settings, W):
     test_perf = tr_perf
 
     return tr_perf, val_perf, test_perf
-
-
-def save_results(results, data_settings, training_settings):
-    filename = training_settings['filename']
-    foldername = training_settings['foldername']
-
-    if not os.path.exists(foldername):
-        os.makedirs(foldername)
-    f = open(foldername + '/' + filename + ".pckl", 'wb')
-    pickle.dump(results, f)
-    pickle.dump(data_settings, f)
-    pickle.dump(training_settings, f)
-    f.close()
-
