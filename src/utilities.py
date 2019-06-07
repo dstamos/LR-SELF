@@ -30,6 +30,7 @@ class DataHandler:
 
         temp = sio.loadmat('datasets/' + settings.dataset + '.mat')
         full_matrix = temp['fullMatrix'].astype(float)
+        full_matrix = full_matrix[:50, :]
 
         n_rows, n_cols = full_matrix.shape
         self.n_rows = n_rows
@@ -62,9 +63,6 @@ class DataHandler:
             tr_matrix[c_row, train_idx] = full_matrix[c_row, train_idx]
             val_matrix[c_row, val_idx] = full_matrix[c_row, val_idx]
             test_matrix[c_row, test_idx] = full_matrix[c_row, test_idx]
-
-            if c_row % 500 == 0:
-                print('sampling row: %5d | time: %f' % (c_row, time.time() - t))
 
         side_info = np.zeros((n_rows, n_cols + 1))
         side_info[:, :-1] = tr_matrix.toarray()
@@ -120,7 +118,7 @@ def pairwise_embedding(y, n_rows, n_cols):
         mask_embedded[c_row, temp_mask_vect > 0] = temp_mask_vect[temp_mask_vect > 0]
 
         if c_row % 100 == 0:
-            print('embedding row: %5d | time: %f' % (c_row, time.time() - t))
+            print('embedding row: %5d | time: %8.3f' % (c_row, time.time() - t))
 
     return y_embedded, mask_embedded
 
