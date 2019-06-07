@@ -1,4 +1,3 @@
-import time
 import numpy as np
 import scipy as sp
 from numpy.linalg import norm
@@ -26,36 +25,23 @@ def mf_conjugate_grad(data, settings):
                    'A': a_factor,
                    'B': b_factor,
                    'temp_iter': 0,
-                   'loss_part': loss_part_fun(data.side_info @ a_factor, b_factor, tr_embedded, mask, idx_mask)}
+                   'loss_part': loss_part_fun(data.side_info @ a_factor, b_factor, tr_embedded, mask, idx_mask),
+                   'objectives': []}
 
-    conv_tol = 10**-3
-    curr_cost = 10**10
-    opt_tol = 1e-03
-    t = time.time()
+    a = a_factor.flatten()
+    b = b_factor.flatten()
+    x = np.append(a, b)
 
-    while True:
-        prev_cost = curr_cost
+    x = fmin_cg(mf_obj_wrapper, x, mf_grad_wrapper,
+                args=(data, settings, temp_bucket),
+                disp=True,
+                retall=False,
+                full_output=False,
+                maxiter=10000,
+                gtol=settings.opt_tol)
 
-        a = a_factor.flatten()
-        b = b_factor.flatten()
-        x = np.append(a, b)
-
-        x = fmin_cg(mf_obj_wrapper, x, mf_grad_wrapper,
-                    args=(data, settings, temp_bucket),
-                    disp=True,
-                    retall=False,
-                    full_output=False,
-                    maxiter=10000,
-                    gtol=opt_tol)
-
-        a_factor = np.reshape(x[:n_side_info * rank], (n_side_info, rank))
-        b_factor = np.reshape(x[n_side_info * rank:], (n_cols, rank))
-
-        curr_cost = mf_obj(a_factor, b_factor, tr_embedded, mask, idx_mask, settings.regul_param, temp_bucket)
-        diff = abs(prev_cost - curr_cost) / prev_cost
-        print('rank: %4d | diff: %14.6f | time: %f' % (rank, diff, time.time() - t))
-        if diff < conv_tol:
-            break
+    a_factor = np.reshape(x[:n_side_info * rank], (n_side_info, rank))
+    b_factor = np.reshape(x[n_side_info * rank:], (n_cols, rank))
 
     w_matrix = data.side_info @ a_factor @ b_factor.T
 
@@ -98,10 +84,7 @@ def mf_obj_wrapper(x, *args):
     b_factor = np.reshape(x[n_side_info*rank:], (n_cols, rank))
 
     obj = mf_obj(a_factor, b_factor, tr_embedded_mask, mask, idx_mask, settings.regul_param, temp_bucket)
-
-    temp_bucket['temp_iter'] = temp_bucket['temp_iter'] + 1
-    if (temp_bucket['temp_iter'] % 1 == 0) or (temp_bucket['temp_iter'] == 1):
-        print('total obj computations: %5d | obj (in or out of line search): %20.6f' % (temp_bucket['temp_iter'], obj))
+    temp_bucket['objectives'].append(obj)
 
     return obj
 
@@ -145,6 +128,12 @@ def mf_grad_wrapper(x, *args):
     b_factor = np.reshape(x[n_side_info*rank:], (n_cols, rank))
 
     grad = mf_grad(a_factor, b_factor, tr_embedded, mask, idx_mask, settings.regul_param, side_info, temp_bucket)
+
+    temp_bucket['temp_iter'] = temp_bucket['temp_iter'] + 1
+    if (temp_bucket['temp_iter'] % 1 == 0) and (len(temp_bucket['objectives']) > 0):
+        print('total obj comp: %5d | obj (in or out of line search): %10e | ||grad||: %8e' % (temp_bucket['temp_iter'],
+                                                                                              temp_bucket['objectives'][-1],
+                                                                                              np.linalg.norm(grad, ord=2)))
 
     return grad
 
