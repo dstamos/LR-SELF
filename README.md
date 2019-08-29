@@ -16,7 +16,7 @@ pip install python-igraph
 
 ```
 @inproceedings{luise2019leveraging,
-  title={Learning-to-Learn Stochastic Gradient Descent with Biased Regularization},
+  title={Low-Rank Structured Prediction with Theoretical Guarantees},
   author={Luise, Giulia and Stamos, Dimitris and Pontil, Massimiliano and Ciliberto, Carlo},
   booktitle={International Conference on Machine Learning},
   year={2019}
